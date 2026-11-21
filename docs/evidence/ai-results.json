@@ -1,0 +1,114 @@
+{
+  "project_id": "c8b7883d535d4e138984c4dab887f4fb",
+  "transcription": {
+    "id": "e60d11683c9f442382144bd01b28e4ee",
+    "project_id": "c8b7883d535d4e138984c4dab887f4fb",
+    "kind": "transcription",
+    "status": "completed",
+    "progress": 100,
+    "message": "Completed",
+    "result": {
+      "segments": [
+        {
+          "id": "6200f16b554d4b9893ce36eafc842799",
+          "start": 0.0,
+          "end": 2.96,
+          "text": "Here is a simple way to make better videos."
+        },
+        {
+          "id": "7547c68d6c874465baaf9311b86bcfa0",
+          "start": 2.96,
+          "end": 5.44,
+          "text": "Start with one clear idea."
+        },
+        {
+          "id": "9871b7c284f04bbb8c46c35ea4d8b9bf",
+          "start": 5.44,
+          "end": 8.72,
+          "text": "Remove the parts that do not support that idea."
+        },
+        {
+          "id": "06adb7b7471d4a1da3d023b58d693e91",
+          "start": 8.72,
+          "end": 13.84,
+          "text": "Give viewers a useful example, and finish with something they can try today."
+        },
+        {
+          "id": "3931f4fa9eb34a87b46b931591c1d8f6",
+          "start": 13.84,
+          "end": 16.56,
+          "text": "You do not need expensive equipment."
+        },
+        {
+          "id": "05399cfc108846979f2266847221b8e1",
+          "start": 16.56,
+          "end": 20.24,
+          "text": "A clear story and good sound are much more important."
+        },
+        {
+          "id": "211d3327a0734ff7bce2e430e672e8be",
+          "start": 20.24,
+          "end": 25.6,
+          "text": "Record a short test, listen to it, and improve one thing at a time."
+        }
+      ],
+      "language": "en",
+      "provider": "faster-whisper",
+      "model": "base.en"
+    },
+    "error": null,
+    "created_at": "2026-11-18T11:22:06.515735+00:00"
+  },
+  "suggestions": {
+    "id": "db0226576a794e1fa410bb6ce3f73345",
+    "project_id": "c8b7883d535d4e138984c4dab887f4fb",
+    "kind": "clip suggestions",
+    "status": "completed",
+    "progress": 100,
+    "message": "Completed",
+    "result": {
+      "clips": [
+        {
+          "title": "Clear Idea and Minimalism",
+          "start": 0.0,
+          "end": 13.84,
+          "aspect": "9:16",
+          "fit": "crop",
+          "crop_x": 0.5,
+          "caption_style": "bold",
+          "font_size": 48,
+          "caption_color": "#ffffff",
+          "accent_color": "#baff39",
+          "burn_captions": true,
+          "id": "b47e29f47fbc4010888d71f83f83a76f",
+          "reason": "Focuses on starting with one clear idea and removing unnecessary parts.",
+          "suggestion_provider": "ollama",
+          "created_at": "2026-11-18T11:22:35.198933+00:00"
+        },
+        {
+          "title": "Improvement Process",
+          "start": 13.84,
+          "end": 25.6,
+          "aspect": "9:16",
+          "fit": "crop",
+          "crop_x": 0.5,
+          "caption_style": "bold",
+          "font_size": 48,
+          "caption_color": "#ffffff",
+          "accent_color": "#baff39",
+          "burn_captions": true,
+          "id": "4fbc37bd76fc4966bac0accaed2dfe3d",
+          "reason": "Describes the process of recording, listening, and improving one aspect at a time.",
+          "suggestion_provider": "ollama",
+          "created_at": "2026-11-18T11:22:35.198933+00:00"
+        }
+      ],
+      "provider": "ollama",
+      "covered_segments": 7,
+      "total_segments": 7,
+      "coverage_note": "Only the first 24,000 transcript characters are considered."
+    },
+    "error": null,
+    "created_at": "2026-11-18T11:22:15.619544+00:00"
+  }
+}

@@ -1,0 +1,51 @@
+// UI smoke test. Requires playwright-core (npm install --no-save playwright-core).
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const root = path.resolve(__dirname, '..');
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});
+ const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+ page.on('dialog',dialog=>dialog.accept());
+ try {
+ await page.goto('http://127.0.0.1:8000');
+ await page.getByRole('heading',{name:'Your next great clip starts here.'}).waitFor();
+ await page.screenshot({path:path.join(root,'test-output/library.png'),fullPage:true});
+ await page.getByRole('button',{name:'Upload video',exact:true}).click();
+ await page.locator('input[type=file][accept="video/*,.mkv"]').setInputFiles(path.join(root,'test-output/speech.mp4'));
+ await page.getByLabel('Project title').fill('Browser verification');
+ await page.getByRole('button',{name:'Create project',exact:true}).click();
+ await page.getByRole('heading',{name:'Browser verification',level:1,exact:true}).waitFor();
+ await page.getByRole('button',{name:'Create a clip',exact:true}).click();
+ await page.getByLabel('Clip title').fill('A better story');
+ await page.getByLabel('Clip start in seconds').fill('1');
+ await page.getByLabel('Clip end in seconds').fill('6');
+ await page.getByLabel('Framing').selectOption('contain');
+ await page.getByRole('button',{name:'Save changes',exact:true}).click();
+ await page.getByRole('button',{name:'Saved',exact:true}).waitFor();
+ await page.getByRole('button',{name:/^Transcript/}).click();
+ const srt='1\n00:00:01,000 --> 00:00:03,000\nMake better videos.\n\n2\n00:00:03,000 --> 00:00:06,000\nStart with one clear idea.\n';
+ await page.locator('input[type=file][accept=".srt,.vtt"]').setInputFiles({name:'captions.srt',mimeType:'text/plain',buffer:Buffer.from(srt)});
+ await page.getByLabel('Caption 1 text').waitFor();
+ await page.getByLabel('Caption 1 text').fill('Tell a better story.');
+ await page.getByRole('button',{name:'Save',exact:true}).click();
+ await page.getByText('Transcript saved',{exact:true}).waitFor();
+ await page.screenshot({path:path.join(root,'test-output/editor.png'),fullPage:true});
+ await page.getByRole('button',{name:'Export clip',exact:true}).click();
+ const downloadLink=page.getByRole('link',{name:'Download MP4',exact:true}).first();
+ await downloadLink.waitFor({timeout:60000});
+ const [download]=await Promise.all([page.waitForEvent('download'),downloadLink.click()]);
+ await download.saveAs(path.join(root,'test-output/browser-export.mp4'));
+ assert(fs.statSync(path.join(root,'test-output/browser-export.mp4')).size>10000);
+ await page.screenshot({path:path.join(root,'test-output/export.png'),fullPage:true});
+ await page.getByRole('button',{name:'Back to library',exact:true}).click();
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:path.join(root,'test-output/mobile.png'),fullPage:true});
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+2),'Mobile layout overflows');
+ assert.deepEqual(errors,[]);
+ fs.writeFileSync(path.join(root,'test-output/browser-results.json'),JSON.stringify({passed:true,errors,checks:['upload','create clip','trim','framing','save','SRT import','caption edit','export','download','mobile width']},null,2));
+ console.log('Browser workflow passed');
+ } catch(e) {await page.screenshot({path:path.join(root,'test-output/browser-failure.png'),fullPage:true}); throw e;} finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exit(1)});

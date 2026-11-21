@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "errors": [],
+  "checks": [
+    "upload",
+    "create clip",
+    "trim",
+    "framing",
+    "save",
+    "SRT import",
+    "caption edit",
+    "export",
+    "download",
+    "mobile width"
+  ]
+}

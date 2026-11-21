@@ -1,0 +1,38 @@
+export type Segment = { id: string; start: number; end: number; text: string };
+export type Clip = {
+  id: string;
+  title: string;
+  start: number;
+  end: number;
+  aspect: '9:16' | '1:1' | '16:9' | '4:5';
+  fit: 'crop' | 'contain';
+  crop_x: number;
+  crop_y?: number;
+  zoom?: number;
+  caption_style: 'bold' | 'clean' | 'karaoke' | 'none';
+  font_size: number;
+  caption_color: string;
+  accent_color: string;
+  burn_captions: boolean;
+  reason?: string;
+  score?: number;
+};
+export type Export = { id: string; clip_id: string; title: string; url: string; preview_url?: string; thumbnail_url?: string; size: number; created_at: string };
+export type Analysis = { summary: string; topics?: string[]; coverage?: Record<string, unknown> | string; web_sources?: { title?: string; url: string }[]; warnings?: string[] };
+export type Project = { id: string; title: string; filename: string; duration: number; width: number; height: number; created_at: string; video_url: string; thumbnail_url?: string; segments: Segment[]; clips: Clip[]; exports: Export[]; analysis?: Analysis; active_job?: Job | null };
+export type Health = {
+  status: string;
+  ffmpeg: boolean | string;
+  ffprobe: boolean | string;
+  ollama: boolean;
+  models: string[];
+  transcription_available: boolean;
+  transcription_cached_models?: string[];
+  transcription_gpu_available?: boolean;
+  transcription_device?: string;
+  transcription_cpu_threads?: number;
+  gpu_name?: string;
+  default_model?: string;
+  tavily_configured?: boolean;
+};
+export type Job = { id: string; project_id?: string; kind?: string; created_at?: string; started_at?: string; status: 'queued' | 'running' | 'completed' | 'failed'; progress: number; message: string; result?: unknown; error?: string };

@@ -1,0 +1,137 @@
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend import main, media
+from backend.store import Store
+
+
+@pytest.fixture()
+def client(tmp_path,monkeypatch):
+    monkeypatch.setattr(main,"DATA",tmp_path/"data")
+    monkeypatch.setattr(main,"store",Store(tmp_path/"data"))
+    with TestClient(main.app) as client:
+        yield client
+
+
+@pytest.fixture(scope="session")
+def video(tmp_path_factory):
+    folder=tmp_path_factory.mktemp("media")
+    path=folder/"sample.mp4"
+    subprocess.run([media.binary("ffmpeg"),"-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=12","-f","lavfi","-i","sine=frequency=440:sample_rate=16000","-t","4","-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",str(path)],check=True)
+    return path
+
+
+def upload(client,video):
+    with video.open("rb") as source:
+        response=client.post("/api/projects",files={"file":("sample.mp4",source,"video/mp4")},data={"title":"Test source"})
+    assert response.status_code==201,response.text
+    return response.json()
+
+
+def wait_job(client,id):
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        job=client.get("/api/jobs/"+id).json()
+        if job["status"] in ("completed","failed"):
+            assert job["status"]=="completed",job
+            return job
+        time.sleep(.1)
+    pytest.fail("Job timed out")
+
+
+def test_full_export_flow(client,video):
+    p=upload(client,video)
+    assert p["has_audio"] and p["duration"]>=4
+    assert client.get(p["video_url"],headers={"Range":"bytes=0-99"}).status_code==206
+    assert client.get(p["thumbnail_url"]).status_code==200
+    transcript="1\n00:00:00,000 --> 00:00:01,800\nHello {danger} \\N world!\n\n2\n00:00:02,000 --> 00:00:03,900\nMake a useful clip.\n"
+    response=client.post(f"/api/projects/{p['id']}/transcript/import",files={"file":("captions.srt",transcript,"text/plain")})
+    assert response.status_code==200,response.text
+    assert len(response.json()["segments"])==2
+    assert "Hello" in client.get(f"/api/projects/{p['id']}/transcript?format=srt").text
+    clip=client.post(f"/api/projects/{p['id']}/clips",json={"title":"Export test","start":.5,"end":3.5,"aspect":"9:16","fit":"contain","caption_style":"karaoke"}).json()
+    response=client.post(f"/api/projects/{p['id']}/clips/{clip['id']}/export",json={"resolution":720})
+    assert response.status_code==202,response.text
+    job=wait_job(client,response.json()["id"])
+    export=job["result"]
+    assert (export["width"],export["height"])==(720,1280)
+    assert abs(export["duration"]-3)<.2
+    result=client.get(export["url"])
+    assert result.status_code==200 and result.content[4:8]==b"ftyp"
+    assert "attachment" in result.headers["content-disposition"]
+    assert client.get(export["thumbnail_url"]).status_code==200
+    assert len(client.get(f"/api/projects/{p['id']}").json()["exports"])==1
+    assert client.delete(f"/api/projects/{p['id']}").status_code==204
+    assert client.get(f"/api/projects/{p['id']}").status_code==404
+
+
+@pytest.mark.parametrize("aspect,expected",[("1:1",(720,720)),("16:9",(1280,720)),("4:5",(720,900))])
+def test_crop_ratios(client,video,aspect,expected):
+    p=upload(client,video)
+    clip=client.post(f"/api/projects/{p['id']}/clips",json={"start":0,"end":.5,"aspect":aspect,"fit":"crop","crop_x":.2,"burn_captions":False}).json()
+    response=client.post(f"/api/projects/{p['id']}/clips/{clip['id']}/export",json={"resolution":720})
+    export=wait_job(client,response.json()["id"])["result"]
+    assert (export["width"],export["height"])==expected
+
+
+def test_bad_inputs_and_heuristic(client,video):
+    p=upload(client,video)
+    url=f"/api/projects/{p['id']}"
+    assert client.post(url+"/clips",json={"start":3,"end":2}).status_code==422
+    assert client.post(url+"/clips",json={"start":0,"end":9}).status_code==422
+    assert client.post(url+"/clips",json={"start":0,"end":2,"caption_color":"red;bad"}).status_code==422
+    assert client.put(url+"/transcript",json={"segments":[{"start":0,"end":3,"text":"one"},{"start":2,"end":4,"text":"two"}]}).status_code==400
+    assert client.post("/api/projects",files={"file":("bad.mp4",b"not a video")}).status_code==400
+    response=client.post(url+"/suggest",json={"provider":"heuristic","min_duration":1,"max_duration":2,"count":2})
+    clips=wait_job(client,response.json()["id"])["result"]["clips"]
+    assert len(clips)==2
+    assert clips[0]["suggestion_provider"]=="heuristic"
+    assert len(client.get(url).json()["clips"])==2
+    updated=client.put(url+"/clips/"+clips[0]["id"],json={"start":.2,"end":1.8,"title":"Edited"})
+    assert updated.status_code==200 and updated.json()["title"]=="Edited"
+    assert client.delete(url+"/clips/"+clips[0]["id"]).status_code==204
+    assert client.post(url+"/clips",json={"start":0,"end":1},headers={"Origin":"https://evil.example"}).status_code==403
+    assert client.get(url+"/exports/../../config/download").status_code==404
+
+
+def test_subtitles_and_ass():
+    rows=media.parse_subtitles("WEBVTT\n\n00:00.000 --> 00:01.000\n<v Narrator>Hello</v>\n")
+    assert rows==[{"start":0,"end":1,"text":"Hello"}]
+    assert "{\\" not in media.escape_ass("{\\pos(1,2)} text")
+    assert media.timestamp(1.9996)=="00:00:02,000"
+
+
+def test_restart_recovery(tmp_path):
+    store=Store(tmp_path)
+    store.put_job({"id":"job","project_id":"p","status":"running"})
+    store.recover_jobs()
+    assert store.job("job")["status"]=="failed"
+
+
+def test_silent_video_1080_and_empty_subtitles(client, tmp_path):
+    source=tmp_path/"silent.mp4"
+    subprocess.run([media.binary("ffmpeg"),"-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=blue:s=160x120:r=10","-t","1","-c:v","libx264","-pix_fmt","yuv420p",str(source)],check=True)
+    p=upload(client,source)
+    assert not p['has_audio']
+    path=f"/api/projects/{p['id']}"
+    assert client.post(path+'/transcribe',json={'model':'base.en','allow_download':False}).status_code==422
+    assert client.post(path+'/transcript/import',files={'file':('bad.srt','not timed captions')}).status_code==400
+    clip=client.post(path+'/clips',json={'start':0,'end':.5,'aspect':'9:16','caption_style':'none'}).json()
+    job=client.post(path+f"/clips/{clip['id']}/export",json={'resolution':1080}).json()
+    result=wait_job(client,job['id'])['result']
+    assert (result['width'],result['height'])==(1080,1920)
+
+
+def test_cache_reuse_without_network(tmp_path, monkeypatch):
+    cache=tmp_path/'hub'/'models--Systran--faster-whisper-base.en'/'snapshots'/'revision'
+    cache.mkdir(parents=True)
+    for f in ('model.bin','config.json','tokenizer.json'):
+        (cache/f).write_text('fixture')
+    monkeypatch.setenv('HF_HUB_CACHE',str(tmp_path/'hub'))
+    assert main.cached_speech_model('base.en')==str(cache)
+    assert main.cached_speech_model('medium') is None
