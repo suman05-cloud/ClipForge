@@ -218,3 +218,65 @@ def test_link_import_and_sliced_export(client, monkeypatch, tmp_path):
     assert export_result["height"] == 1280
     assert client.get(export_result["url"]).status_code == 200
 
+
+def test_extract_audio_wav_and_no_audio_handling(tmp_path):
+    from backend import transcription_worker, media
+    import pytest
+
+    # 1. Video with audio
+    vid_with_audio = tmp_path / "with_audio.mp4"
+    subprocess.run([
+        media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000",
+        "-t", "1",
+        "-c:v", "libx264", "-c:a", "aac",
+        "-shortest", str(vid_with_audio)
+    ], check=True)
+
+    wav_out = transcription_worker.extract_audio_wav(vid_with_audio)
+    assert Path(wav_out).is_file()
+    assert Path(wav_out).stat().st_size > 100
+    try:
+        Path(wav_out).unlink()
+    except OSError:
+        pass
+
+    # 2. Silent video with NO audio stream
+    vid_silent = tmp_path / "silent.mp4"
+    subprocess.run([
+        media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=black:s=160x120:r=10",
+        "-t", "1",
+        "-c:v", "libx264",
+        str(vid_silent)
+    ], check=True)
+
+    with pytest.raises(ValueError, match="no audio track"):
+        transcription_worker.extract_audio_wav(vid_silent)
+
+
+def test_downloader_ensure_mp4_remux(tmp_path):
+    from backend import downloader, media
+
+    target_mp4 = tmp_path / "source.mp4"
+    fake_webm = tmp_path / "source.mp4.webm"
+    # Create webm file
+    subprocess.run([
+        media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000",
+        "-t", "1",
+        "-shortest", str(fake_webm)
+    ], check=True)
+
+    assert not target_mp4.is_file()
+    assert fake_webm.is_file()
+
+    out = downloader._ensure_mp4_output(target_mp4)
+    assert out.is_file()
+    assert target_mp4.is_file()
+    assert target_mp4.stat().st_size > 1000
+    meta = media.probe(target_mp4)
+    assert meta["has_audio"] is True
+

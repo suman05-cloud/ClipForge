@@ -6,6 +6,7 @@ time range during clip export.
 """
 import os
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -125,19 +126,78 @@ def download_thumbnail(thumbnail_url: str, output_path: Path):
         output_path.write_bytes(resp.read())
 
 
+def _ensure_mp4_output(output_path: Path) -> Path:
+    """Ensure output_path is a playable MP4 file, remuxing if yt-dlp saved as webm/mkv or with appended ext."""
+    if output_path.is_file() and output_path.stat().st_size > 1024:
+        return output_path
+
+    parent = output_path.parent
+    base_name = output_path.stem
+    # Find any downloaded candidate matching base_name
+    candidates = [
+        f for f in parent.glob(f"{base_name}*")
+        if f.is_file() and f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".json", ".sqlite3")
+        and f != output_path and f.stat().st_size > 1024
+    ]
+
+    if not candidates:
+        return output_path
+
+    chosen = max(candidates, key=lambda p: p.stat().st_size)
+    ffmpeg_bin = os.getenv("CLIPFORGE_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
+    try:
+        cmd = [
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(chosen),
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart",
+            str(output_path)
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if res.returncode != 0 or not output_path.is_file() or output_path.stat().st_size < 1024:
+            # Fallback to re-encoding video if codec copy in MP4 container is unsupported
+            cmd_fallback = [
+                ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(chosen),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "160k",
+                "-movflags", "+faststart",
+                str(output_path)
+            ]
+            subprocess.run(cmd_fallback, capture_output=True, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+        if output_path.is_file() and output_path.stat().st_size > 1024:
+            try:
+                chosen.unlink()
+            except OSError:
+                pass
+    except Exception:
+        if not output_path.is_file() and chosen.is_file():
+            try:
+                chosen.rename(output_path)
+            except OSError:
+                pass
+
+    return output_path
+
+
 def download_preview_proxy(url: str, output_path: Path, cookies_browser: str | None = None, update: Callable[[int, str], None] | None = None):
     """Download crisp 720p/480p preview proxy so editing and scrubbing look great without downloading 4K masters."""
     if update:
         update(15, "Fetching high-quality 720p preview video")
 
+    target_base = str(output_path.with_suffix(""))
     opts = {
         **_ydl_base_opts(cookies_browser),
         "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best[height<=480]/best",
-        "outtmpl": str(output_path),
+        "merge_output_format": "mp4",
+        "outtmpl": f"{target_base}.%(ext)s",
         "overwrites": True,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
+
+    _ensure_mp4_output(output_path)
 
 
 def download_clip_section(url: str, start: float, end: float, output_path: Path, max_height: int = 1080, cookies_browser: str | None = None, update: Callable[[int, str], None] | None = None):
@@ -145,13 +205,17 @@ def download_clip_section(url: str, start: float, end: float, output_path: Path,
     if update:
         update(20, f"Fetching {end - start:.1f}s full-quality slice ({start:.1f}s to {end:.1f}s)")
 
+    target_base = str(output_path.with_suffix(""))
     opts = {
         **_ydl_base_opts(cookies_browser),
         "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
-        "outtmpl": str(output_path),
+        "merge_output_format": "mp4",
+        "outtmpl": f"{target_base}.%(ext)s",
         "overwrites": True,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
+
+    _ensure_mp4_output(output_path)

@@ -333,9 +333,13 @@ def import_link(body: LinkInput):
         except Exception:
             pass
 
-        if not source.is_file() and (folder / "thumbnail.jpg").is_file():
+        has_audio = True
+        if source.is_file():
             try:
-                media.thumbnail(folder / "thumbnail.jpg", source)
+                probe_data = media.probe(source)
+                if not duration:
+                    duration = probe_data.get("duration") or duration
+                has_audio = probe_data.get("has_audio", True)
             except Exception:
                 pass
 
@@ -346,7 +350,7 @@ def import_link(body: LinkInput):
             "duration": duration,
             "width": width,
             "height": height,
-            "has_audio": True,
+            "has_audio": has_audio,
             "source_file": source.name if source.is_file() else "source.mp4",
             "source_url": body.url,
             "is_link": True,

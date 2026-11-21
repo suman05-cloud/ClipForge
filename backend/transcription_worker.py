@@ -3,9 +3,55 @@ import ctypes
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from .transcription import cuda_directories
+
+
+def extract_audio_wav(source_path: str | Path) -> str:
+    """Pre-extract audio to a 16kHz mono WAV file using FFmpeg.
+
+    This avoids PyAV demuxer container bugs (e.g. IndexError in StreamContainer.get),
+    removes container overhead, and ensures seamless Whisper ingestion.
+    """
+    src = Path(source_path)
+    if not src.is_file():
+        raise FileNotFoundError(f"Source file not found: {src}")
+
+    temp_wav = Path(tempfile.gettempdir()) / f"whisper_audio_{os.getpid()}_{src.stem[:24]}.wav"
+    ffmpeg_bin = os.getenv("CLIPFORGE_FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
+    cmd = [
+        ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(src),
+        "-vn", "-sn", "-dn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-ac", "1",
+        str(temp_wav)
+    ]
+    res = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+    if res.returncode != 0 or not temp_wav.is_file() or temp_wav.stat().st_size < 100:
+        if temp_wav.is_file():
+            try:
+                temp_wav.unlink()
+            except OSError:
+                pass
+        err_msg = res.stderr.strip()
+        err_lower = err_msg.lower()
+        if "does not contain any stream" in err_lower or "matches no streams" in err_lower or "output file is empty" in err_lower:
+            raise ValueError("This video contains no audio track to transcribe.")
+        # If extraction failed for another reason, fallback to original source
+        return str(source_path)
+    return str(temp_wav)
 
 
 def deduplicate_sentences(text: str) -> str:
@@ -103,35 +149,48 @@ def main():
         engine = BatchedInferencePipeline(model=model)
         options["batch_size"] = 16
 
-    segments, info = engine.transcribe(config["source"], **options)
-    result = []
-    video_dur = duration or getattr(info, "duration", 0) or 1.0
+    audio_path = config["source"]
+    temp_wav_created = None
+    try:
+        audio_path = extract_audio_wav(config["source"])
+        if audio_path != config["source"]:
+            temp_wav_created = audio_path
 
-    for segment in segments:
-        start = max(0.0, segment.start)
-        end = min(video_dur, segment.end)
-        cleaned_text = deduplicate_sentences(segment.text)
-        if cleaned_text and end > start:
-            result.append({"start": round(start, 3), "end": round(end, 3), "text": cleaned_text})
-        pct = min(96, 12 + int(end / video_dur * 84))
+        segments, info = engine.transcribe(audio_path, **options)
+        result = []
+        video_dur = duration or getattr(info, "duration", 0) or 1.0
+
+        for segment in segments:
+            start = max(0.0, segment.start)
+            end = min(video_dur, segment.end)
+            cleaned_text = deduplicate_sentences(segment.text)
+            if cleaned_text and end > start:
+                result.append({"start": round(start, 3), "end": round(end, 3), "text": cleaned_text})
+            pct = min(96, 12 + int(end / video_dur * 84))
+            emit({
+                "type": "progress",
+                "progress": pct,
+                "message": f"Transcribing ({pct}%) on {device.upper()} · {end:.1f}s / {video_dur:.1f}s ({len(result)} captions)"
+            })
+
         emit({
             "type": "progress",
-            "progress": pct,
-            "message": f"Transcribing ({pct}%) on {device.upper()} · {end:.1f}s / {video_dur:.1f}s ({len(result)} captions)"
+            "progress": 100,
+            "message": f"Finalizing {len(result)} captions · {device.upper()}"
         })
-
-    emit({
-        "type": "progress",
-        "progress": 100,
-        "message": f"Finalizing {len(result)} captions · {device.upper()}"
-    })
-    emit({
-        "type": "result",
-        "segments": result,
-        "language": info.language,
-        "provider": "faster-whisper",
-        "model": config["model"]
-    })
+        emit({
+            "type": "result",
+            "segments": result,
+            "language": info.language,
+            "provider": "faster-whisper",
+            "model": config["model"]
+        })
+    finally:
+        if temp_wav_created and os.path.exists(temp_wav_created):
+            try:
+                os.remove(temp_wav_created)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
