@@ -125,6 +125,12 @@ class TranscribeInput(StrictModel):
     cpu_threads: int = Field(default=8,ge=1,le=16)
 
 
+class LinkInput(StrictModel):
+    url: str = Field(min_length=1, max_length=2000)
+    title: str | None = Field(default=None, max_length=160)
+    fetch_subtitles: bool = True
+
+
 class ExportInput(StrictModel):
     resolution: Literal[720,1080] = 720
 
@@ -275,6 +281,88 @@ async def upload(file: UploadFile=File(...), title: str | None=Form(None)):
         raise
     finally:
         await file.close()
+
+
+@app.post("/api/projects/link", status_code=202)
+def import_link(body: LinkInput):
+    parsed = urlparse(body.url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(400, "Please provide a valid http or https video link (e.g. YouTube).")
+
+    id = identifier()
+    folder = directory(id)
+    folder.mkdir(parents=True)
+    source = folder / "source.mp4"
+
+    def work(update):
+        from . import downloader
+        update(5, "Contacting video link & extracting metadata")
+        try:
+            info = downloader.extract_info(body.url)
+        except Exception as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise ValueError(f"Could not read video from link: {exc}")
+
+        title = (body.title or info.get("title") or "Imported Video")[:160]
+        duration = float(info.get("duration") or 0)
+        width = int(info.get("width") or 1280)
+        height = int(info.get("height") or 720)
+        thumb_url = info.get("thumbnail")
+
+        update(15, "Fetching video thumbnail")
+        if thumb_url:
+            try:
+                downloader.download_thumbnail(thumb_url, folder / "thumbnail.jpg")
+            except Exception:
+                pass
+
+        segments = []
+        if body.fetch_subtitles:
+            update(25, "Extracting subtitles from video link (zero video download)")
+            try:
+                raw_segs = downloader.extract_subtitles(info)
+                if raw_segs:
+                    segments = checked_segments(raw_segs, {"duration": duration})
+            except Exception:
+                pass
+
+        update(45, "Fetching lightweight 360p preview proxy (zero full HD download)")
+        try:
+            downloader.download_preview_proxy(body.url, source, update)
+        except Exception:
+            pass
+
+        if not source.is_file() and (folder / "thumbnail.jpg").is_file():
+            try:
+                media.thumbnail(folder / "thumbnail.jpg", source)
+            except Exception:
+                pass
+
+        p = {
+            "id": id,
+            "title": title,
+            "filename": f"{info.get('id', 'video')}.mp4",
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "has_audio": True,
+            "source_file": source.name if source.is_file() else "source.mp4",
+            "source_url": body.url,
+            "is_link": True,
+            "youtube_id": info.get("id"),
+            "size": source.stat().st_size if source.is_file() else 0,
+            "created_at": now(),
+            "video_url": f"/api/projects/{id}/video",
+            "thumbnail_url": f"/api/projects/{id}/thumbnail",
+            "segments": segments,
+            "clips": [],
+            "exports": []
+        }
+        store.put(p)
+        update(100, f"Video imported successfully · {len(segments)} captions ready")
+        return p
+
+    return start_job(id, "video link import", work)
 
 
 @app.get("/api/projects/{id}")
@@ -524,8 +612,27 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
         folder=directory(id)/"exports"
         folder.mkdir(exist_ok=True)
         output=folder/(export_id+".mp4")
+        temp_slice = None
         try:
-            media.render(directory(id)/p["source_file"],output,clip,p["segments"],body.resolution,update)
+            if p.get("is_link") and p.get("source_url"):
+                from . import downloader
+                temp_slice = folder / f"raw_slice_{export_id}.mp4"
+                downloader.download_clip_section(
+                    p["source_url"],
+                    clip["start"],
+                    clip["end"],
+                    temp_slice,
+                    max_height=body.resolution,
+                    update=update
+                )
+                sliced_clip = {**clip, "start": 0.0, "end": clip["end"] - clip["start"]}
+                shifted_segments = [
+                    {**s, "start": s["start"] - clip["start"], "end": s["end"] - clip["start"]}
+                    for s in p["segments"]
+                ]
+                media.render(temp_slice, output, sliced_clip, shifted_segments, body.resolution, update)
+            else:
+                media.render(directory(id)/p["source_file"],output,clip,p["segments"],body.resolution,update)
             info=media.probe(output)
             media.thumbnail(output,folder/(export_id+".jpg"),min(.5,info["duration"]/2))
             result={"id":export_id,"clip_id":clip_id,"title":clip["title"],"url":f"/api/projects/{id}/exports/{export_id}/download","preview_url":f"/api/projects/{id}/exports/{export_id}/video","thumbnail_url":f"/api/projects/{id}/exports/{export_id}/thumbnail","size":output.stat().st_size,"created_at":now(),"width":info["width"],"height":info["height"],"duration":info["duration"],"settings":clip}
@@ -534,6 +641,9 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
         except Exception:
             output.unlink(missing_ok=True)
             raise
+        finally:
+            if temp_slice and temp_slice.is_file():
+                temp_slice.unlink(missing_ok=True)
     return start_job(id,"video export",work)
 
 

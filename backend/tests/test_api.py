@@ -135,3 +135,86 @@ def test_cache_reuse_without_network(tmp_path, monkeypatch):
     monkeypatch.setenv('HF_HUB_CACHE',str(tmp_path/'hub'))
     assert main.cached_speech_model('base.en')==str(cache)
     assert main.cached_speech_model('medium') is None
+
+
+def test_link_import_and_sliced_export(client, monkeypatch, tmp_path):
+    # Invalid URL returns 400
+    res = client.post("/api/projects/link", json={"url": "not-a-valid-url"})
+    assert res.status_code == 400
+
+    from backend import downloader
+
+    # Mock extract_info
+    monkeypatch.setattr(downloader, "extract_info", lambda url: {
+        "id": "mock_yt_123",
+        "title": "Mock YouTube Stream",
+        "duration": 180.0,
+        "width": 1920,
+        "height": 1080,
+        "thumbnail": None
+    })
+
+    # Mock extract_subtitles
+    monkeypatch.setattr(downloader, "extract_subtitles", lambda info: [
+        {"id": "s1", "start": 10.0, "end": 14.0, "text": "This is a great moment in the video."}
+    ])
+
+    # Mock preview proxy download (creates tiny blank mp4)
+    def mock_preview(url, out, update=None):
+        subprocess.run([media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=10", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)], check=True)
+    monkeypatch.setattr(downloader, "download_preview_proxy", mock_preview)
+
+    # Mock clip section slice download
+    downloaded_ranges = []
+    def mock_download_slice(url, start, end, out, max_height=1080, update=None):
+        downloaded_ranges.append((start, end, max_height))
+        duration = max(0.5, end - start)
+        subprocess.run([media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)], check=True)
+    monkeypatch.setattr(downloader, "download_clip_section", mock_download_slice)
+
+    # Import link
+    res = client.post("/api/projects/link", json={
+        "url": "https://www.youtube.com/watch?v=mock_yt_123",
+        "title": "Custom Title",
+        "fetch_subtitles": True
+    })
+    assert res.status_code == 202
+    job_id = res.json()["id"]
+    completed_job = wait_job(client, job_id)
+    project_id = completed_job["project_id"]
+
+    # Verify project properties
+    p = client.get(f"/api/projects/{project_id}").json()
+    assert p["is_link"] is True
+    assert p["source_url"] == "https://www.youtube.com/watch?v=mock_yt_123"
+    assert p["title"] == "Custom Title"
+    assert len(p["segments"]) == 1
+    assert p["segments"][0]["text"] == "This is a great moment in the video."
+
+    # Create a clip spanning 10s to 15s
+    clip_res = client.post(f"/api/projects/{project_id}/clips", json={
+        "start": 10.0,
+        "end": 15.0,
+        "title": "Viral Hook",
+        "aspect": "9:16",
+        "caption_style": "bold"
+    })
+    assert clip_res.status_code == 201
+    clip_id = clip_res.json()["id"]
+
+    # Export the clip at 720p
+    exp_job_res = client.post(f"/api/projects/{project_id}/clips/{clip_id}/export", json={"resolution": 720})
+    assert exp_job_res.status_code == 202
+    exp_job = wait_job(client, exp_job_res.json()["id"])
+    assert exp_job["status"] == "completed"
+
+    # Verify download_clip_section was invoked with exact start and end slice
+    assert len(downloaded_ranges) == 1
+    assert downloaded_ranges[0] == (10.0, 15.0, 720)
+
+    # Verify export file is accessible
+    export_result = exp_job["result"]
+    assert export_result["width"] == 720
+    assert export_result["height"] == 1280
+    assert client.get(export_result["url"]).status_code == 200
+

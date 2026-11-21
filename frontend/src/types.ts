@@ -19,7 +19,25 @@ export type Clip = {
 };
 export type Export = { id: string; clip_id: string; title: string; url: string; preview_url?: string; thumbnail_url?: string; size: number; created_at: string };
 export type Analysis = { summary: string; topics?: string[]; coverage?: Record<string, unknown> | string; web_sources?: { title?: string; url: string }[]; warnings?: string[] };
-export type Project = { id: string; title: string; filename: string; duration: number; width: number; height: number; created_at: string; video_url: string; thumbnail_url?: string; segments: Segment[]; clips: Clip[]; exports: Export[]; analysis?: Analysis; active_job?: Job | null };
+export type Project = {
+  id: string;
+  title: string;
+  filename: string;
+  duration: number;
+  width: number;
+  height: number;
+  created_at: string;
+  video_url: string;
+  thumbnail_url?: string;
+  segments: Segment[];
+  clips: Clip[];
+  exports: Export[];
+  analysis?: Analysis;
+  active_job?: Job | null;
+  is_link?: boolean;
+  source_url?: string;
+  youtube_id?: string;
+};
 export type Health = {
   status: string;
   ffmpeg: boolean | string;

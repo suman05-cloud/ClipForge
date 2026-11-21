@@ -28,7 +28,8 @@ import {
   Upload,
   X,
   Cpu,
-  Layers
+  Layers,
+  Link2
 } from 'lucide-react';
 import type { Clip, Export, Health, Job, Project, Segment, Analysis } from './types';
 
@@ -98,6 +99,10 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [job, setJob] = useState<Job | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadModalTab, setUploadModalTab] = useState<'file' | 'link'>('file');
+  const [linkUrl, setLinkUrl] = useState('');
+  const [linkTitle, setLinkTitle] = useState('');
+  const [linkFetchSubs, setLinkFetchSubs] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState('');
@@ -197,8 +202,11 @@ export default function App() {
         if (next.status === 'completed') {
           clearInterval(id);
           setNotice(next.message || 'Completed successfully');
-          if (activeProject.current === next.project_id || !next.project_id) {
-            if (activeProject.current) await refreshProject(activeProject.current);
+          if (next.project_id) {
+            activeProject.current = next.project_id;
+            await refreshProject(next.project_id, false);
+          } else if (activeProject.current) {
+            await refreshProject(activeProject.current);
           } else {
             await loadProjects();
           }
@@ -377,6 +385,29 @@ export default function App() {
       setTab('clips');
       setSection('library');
       setNotice('Video imported successfully. Create a clip or add a transcript to find highlights.');
+    });
+
+  const importLink = () =>
+    act('Connecting to video link', async () => {
+      if (!linkUrl.trim()) throw new Error('Please enter a video URL (e.g. YouTube).');
+      const j = await api<Job>('/projects/link', {
+        method: 'POST',
+        body: JSON.stringify({
+          url: linkUrl.trim(),
+          title: linkTitle.trim() || undefined,
+          fetch_subtitles: linkFetchSubs
+        })
+      });
+      setJob(j);
+      if (j.project_id) {
+        activeProject.current = j.project_id;
+      }
+      setUploadOpen(false);
+      setLinkUrl('');
+      setLinkTitle('');
+      setTab('clips');
+      setSection('library');
+      setNotice('Connecting to video link. Subtitles and preview proxy are being extracted…');
     });
 
   const addTranscript = (file: File) =>
@@ -638,6 +669,11 @@ export default function App() {
                         <button className="project-cover" onClick={() => openProject(p.id)} disabled={working}>
                           {p.thumbnail_url ? <img src={p.thumbnail_url} alt="" /> : <Film size={44} />}
                           <span className="duration">{time(p.duration)}</span>
+                          {p.is_link && (
+                            <span className="source-tag">
+                              <Link2 size={10} /> Link
+                            </span>
+                          )}
                           <span className="cover-play">
                             <Scissors size={24} />
                           </span>
@@ -774,6 +810,14 @@ export default function App() {
                 <h1>{project.title}</h1>
                 <p>
                   {time(project.duration)} duration <span>·</span> {project.width} × {project.height} source resolution
+                  {project.is_link && (
+                    <>
+                      <span>·</span>
+                      <span className="badge-link">
+                        <Link2 size={11} /> Online Link
+                      </span>
+                    </>
+                  )}
                 </p>
               </div>
               <div className="studio-heading-actions">
@@ -1457,44 +1501,119 @@ export default function App() {
         </footer>
       </main>
 
-      {/* Upload Modal with Live Dynamic Percentage */}
+      {/* Upload & Link Modal with Live Dynamic Percentage */}
       {uploadOpen &&
         modal(
-          'Upload New Video',
+          'Add Video to ClipForge',
           <>
-            <p className="modal-intro">Choose a video from your computer. Video processing and speech transcription stay 100% local.</p>
-            <button
-              className={`upload-zone ${uploadFile ? 'chosen' : ''}`}
-              onClick={() => fileInput.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                setUploadFile(e.dataTransfer.files[0] || null);
-              }}
-            >
-              <span className="upload-icon">{uploadFile ? <Film size={30} /> : <Upload size={30} />}</span>
-              <strong>{uploadFile ? uploadFile.name : 'Choose a video file or drag and drop'}</strong>
-              <span>{uploadFile ? bytes(uploadFile.size) : 'MP4, MOV, WebM, MKV, AVI · Up to 2 GB'}</span>
-              <small>{uploadFile ? 'Click to select a different video' : 'Your video stays strictly on your computer'}</small>
-            </button>
-            <input ref={fileInput} type="file" hidden accept="video/*,.mkv" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
-
-            {uploadStatus}
-
-            <label className="field">
-              Project Title <span className="muted">(Optional)</span>
-              <input placeholder="e.g. Podcast Highlights - Episode 12" value={uploadTitle} onChange={(e) => setUploadTitle(e.target.value)} maxLength={160} />
-            </label>
-
-            <div className="modal-footer">
-              <span className="hint">
-                <ShieldCheck size={15} /> Zero external cloud uploads
-              </span>
-              <button className="button primary" disabled={!uploadFile || working} onClick={upload}>
-                {uploadProgress ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}
-                {uploadProgress ? (uploadProgress.stage === 'uploading' ? `Uploading (${uploadPct}%)…` : 'Processing…') : 'Import Video'}
+            <div className="modal-tabs">
+              <button
+                type="button"
+                className={`modal-tab ${uploadModalTab === 'file' ? 'active' : ''}`}
+                onClick={() => setUploadModalTab('file')}
+              >
+                <Upload size={16} /> Upload Video File
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${uploadModalTab === 'link' ? 'active' : ''}`}
+                onClick={() => setUploadModalTab('link')}
+              >
+                <Link2 size={16} /> Import from Link (YouTube)
               </button>
             </div>
+
+            {uploadModalTab === 'file' ? (
+              <>
+                <p className="modal-intro">Choose a video from your computer. Video processing and speech transcription stay 100% local.</p>
+                <button
+                  className={`upload-zone ${uploadFile ? 'chosen' : ''}`}
+                  onClick={() => fileInput.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setUploadFile(e.dataTransfer.files[0] || null);
+                  }}
+                >
+                  <span className="upload-icon">{uploadFile ? <Film size={30} /> : <Upload size={30} />}</span>
+                  <strong>{uploadFile ? uploadFile.name : 'Choose a video file or drag and drop'}</strong>
+                  <span>{uploadFile ? bytes(uploadFile.size) : 'MP4, MOV, WebM, MKV, AVI · Up to 2 GB'}</span>
+                  <small>{uploadFile ? 'Click to select a different video' : 'Your video stays strictly on your computer'}</small>
+                </button>
+                <input ref={fileInput} type="file" hidden accept="video/*,.mkv" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+
+                {uploadStatus}
+
+                <label className="field">
+                  Project Title <span className="muted">(Optional)</span>
+                  <input placeholder="e.g. Podcast Highlights - Episode 12" value={uploadTitle} onChange={(e) => setUploadTitle(e.target.value)} maxLength={160} />
+                </label>
+
+                <div className="modal-footer">
+                  <span className="hint">
+                    <ShieldCheck size={15} /> Zero external cloud uploads
+                  </span>
+                  <button className="button primary" disabled={!uploadFile || working} onClick={upload}>
+                    {uploadProgress ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}
+                    {uploadProgress ? (uploadProgress.stage === 'uploading' ? `Uploading (${uploadPct}%)…` : 'Processing…') : 'Import Video'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="modal-intro">Paste a YouTube or online video link. ClipForge extracts captions and a tiny preview proxy without downloading the full master video.</p>
+
+                <label className="field">
+                  Video URL <span className="required">*</span>
+                  <input
+                    type="url"
+                    placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    autoFocus
+                  />
+                </label>
+
+                <label className="field">
+                  Project Title <span className="muted">(Optional - auto-detected from video)</span>
+                  <input
+                    placeholder="Leave empty to use online video title"
+                    value={linkTitle}
+                    onChange={(e) => setLinkTitle(e.target.value)}
+                    maxLength={160}
+                  />
+                </label>
+
+                <label className="checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={linkFetchSubs}
+                    onChange={(e) => setLinkFetchSubs(e.target.checked)}
+                  />
+                  <span>
+                    Auto-import video subtitles & captions
+                    <small>Extracts existing YouTube subtitles in seconds so you can research & find clips right away</small>
+                  </span>
+                </label>
+
+                <div className="link-info-box">
+                  <Sparkles size={18} />
+                  <div>
+                    <strong>No massive video download needed</strong>
+                    <span>ClipForge fetches metadata, instant captions, and a lightweight 360p proxy. High definition is only fetched on demand for the exact 30–60s slice during export!</span>
+                  </div>
+                </div>
+
+                <div className="modal-footer">
+                  <span className="hint">
+                    <HardDrive size={15} /> Slices downloaded on demand
+                  </span>
+                  <button className="button primary" disabled={!linkUrl.trim() || working} onClick={importLink}>
+                    <ArrowRight size={17} /> Import from Link
+                  </button>
+                </div>
+              </>
+            )}
           </>,
           () => setUploadOpen(false)
         )}
