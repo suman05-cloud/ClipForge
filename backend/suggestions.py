@@ -362,20 +362,27 @@ def analyze_transcript(p, body, update: Callable[[int,str],None], ollama_url):
     with httpx.Client(timeout=httpx.Timeout(240,connect=10),trust_env=False) as client:
         _model_ready(client,ollama_url,model)
         try:
-            summaries=[]
-            covered=set()
-            anchors=set()
-            for index,chunk in enumerate(chunks):
-                update(5+int(25*index/len(chunks)),f"Summarizing the entire transcript · section {index+1}/{len(chunks)}")
-                answer=_chat(client,ollama_url,model,
-                    "Summarize every important point in this core section, preserving setup, explanation, and conclusion. Previous context is overlap only. Do not select final clips yet. Return concise summary, topics, and one to three salient_segment_ids referencing the supplied S-number labels in the CORE section. These IDs are evidence anchors for the section's strongest explanations, turning points, or conclusions; prefer the source start of a coherent story. Use only supplied core IDs.",
-                    {"section":index+1,"total_sections":len(chunks),"previous_context":chunk.context,"core_transcript":chunk.text},SectionSummary,{f"S{i}" for i in chunk.indices})
-                summaries.append({"summary":answer.summary,"topics":answer.topics})
-                anchors.update(int(id[1:]) for id in answer.salient_segment_ids)
-                covered.update(chunk.indices)
-            if covered!=set(range(len(segments))):
-                raise ValueError("Transcript coverage verification failed; no partial suggestions were saved.")
-            overall=_reduce_summary(client,ollama_url,model,summaries,update)
+            existing_analysis = p.get("analysis")
+            if existing_analysis and existing_analysis.get("summary") and existing_analysis.get("coverage", {}).get("total_segments") == len(segments):
+                update(30, "Reusing verified whole-transcript summary (34 chunks already analyzed)")
+                overall = Summary(summary=existing_analysis["summary"], topics=existing_analysis.get("topics", []))
+                covered = set(range(len(segments)))
+                anchors = set(range(0, len(segments), max(1, len(segments) // 25)))
+            else:
+                summaries=[]
+                covered=set()
+                anchors=set()
+                for index,chunk in enumerate(chunks):
+                    update(5+int(25*index/len(chunks)),f"Summarizing the entire transcript · section {index+1}/{len(chunks)}")
+                    answer=_chat(client,ollama_url,model,
+                        "Summarize every important point in this core section, preserving setup, explanation, and conclusion. Previous context is overlap only. Do not select final clips yet. Return concise summary, topics, and one to three salient_segment_ids referencing the supplied S-number labels in the CORE section. These IDs are evidence anchors for the section's strongest explanations, turning points, or conclusions; prefer the source start of a coherent story. Use only supplied core IDs.",
+                        {"section":index+1,"total_sections":len(chunks),"previous_context":chunk.context,"core_transcript":chunk.text},SectionSummary,{f"S{i}" for i in chunk.indices})
+                    summaries.append({"summary":answer.summary,"topics":answer.topics})
+                    anchors.update(int(id[1:]) for id in answer.salient_segment_ids)
+                    covered.update(chunk.indices)
+                if covered!=set(range(len(segments))):
+                    raise ValueError("Transcript coverage verification failed; no partial suggestions were saved.")
+                overall=_reduce_summary(client,ollama_url,model,summaries,update)
             candidates=_anchored_windows(segments,minimum,maximum,anchors)
             if not candidates:
                 raise ValueError("The section evidence anchors did not yield a complete clip within the duration limits. Shorten the minimum duration or create a manual clip.")

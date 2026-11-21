@@ -145,7 +145,7 @@ def test_link_import_and_sliced_export(client, monkeypatch, tmp_path):
     from backend import downloader
 
     # Mock extract_info
-    monkeypatch.setattr(downloader, "extract_info", lambda url: {
+    monkeypatch.setattr(downloader, "extract_info", lambda url, *args, **kwargs: {
         "id": "mock_yt_123",
         "title": "Mock YouTube Stream",
         "duration": 180.0,
@@ -155,18 +155,18 @@ def test_link_import_and_sliced_export(client, monkeypatch, tmp_path):
     })
 
     # Mock extract_subtitles
-    monkeypatch.setattr(downloader, "extract_subtitles", lambda info: [
+    monkeypatch.setattr(downloader, "extract_subtitles", lambda info, *args, **kwargs: [
         {"id": "s1", "start": 10.0, "end": 14.0, "text": "This is a great moment in the video."}
     ])
 
     # Mock preview proxy download (creates tiny blank mp4)
-    def mock_preview(url, out, update=None):
+    def mock_preview(url, out, *args, **kwargs):
         subprocess.run([media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=10", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out)], check=True)
     monkeypatch.setattr(downloader, "download_preview_proxy", mock_preview)
 
     # Mock clip section slice download
     downloaded_ranges = []
-    def mock_download_slice(url, start, end, out, max_height=1080, update=None):
+    def mock_download_slice(url, start, end, out, max_height=1080, *args, **kwargs):
         downloaded_ranges.append((start, end, max_height))
         duration = max(0.5, end - start)
         subprocess.run([media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000", "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)], check=True)

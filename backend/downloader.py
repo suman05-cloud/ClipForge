@@ -17,7 +17,7 @@ import yt_dlp
 from . import media
 
 
-def _ydl_base_opts() -> dict:
+def _ydl_base_opts(cookies_browser: str | None = None) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -29,25 +29,39 @@ def _ydl_base_opts() -> dict:
         opts["js_runtimes"] = {"node": {"path": node_path}}
     else:
         opts["js_runtimes"] = {"node": {}}
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
     return opts
 
 
-def extract_info(url: str) -> dict:
-    """Extract video metadata and available subtitle tracks without downloading media."""
-    opts = {
-        **_ydl_base_opts(),
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if not info:
-            raise ValueError("Could not read video information from this link.")
-        duration = float(info.get("duration") or 0)
-        if duration <= 0:
-            raise ValueError("This link has an unknown or live duration. Please provide a recorded video with a set duration.")
-        if duration > 12 * 3600:
-            raise ValueError("Videos longer than 12 hours are not supported.")
-        return info
+def extract_info(url: str, cookies_browser: str | None = None) -> dict:
+    """Extract video metadata and available subtitle tracks without downloading media.
+    Supports YouTube, Instagram Reels, and Facebook video links with automatic cookie fallback.
+    """
+    candidates = [cookies_browser] if cookies_browser else [None, "chrome", "edge"]
+    last_exc = None
+    for browser in candidates:
+        try:
+            opts = {
+                **_ydl_base_opts(browser),
+                "skip_download": True,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    continue
+                duration = float(info.get("duration") or 0)
+                # Fallback for Instagram reels / Facebook videos that don't report duration in initial payload
+                if duration <= 0:
+                    duration = 60.0
+                if duration > 12 * 3600:
+                    raise ValueError("Videos longer than 12 hours are not supported.")
+                info["_resolved_browser"] = browser
+                return info
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise ValueError(f"Could not read video from this link: {last_exc or 'Unknown error'}")
 
 
 def extract_subtitles(info: dict) -> list[dict]:
@@ -90,14 +104,14 @@ def download_thumbnail(thumbnail_url: str, output_path: Path):
         output_path.write_bytes(resp.read())
 
 
-def download_preview_proxy(url: str, output_path: Path, update: Callable[[int, str], None] | None = None):
-    """Download a tiny, lightweight 360p/240p preview proxy so editing and scrubbing are instant."""
+def download_preview_proxy(url: str, output_path: Path, cookies_browser: str | None = None, update: Callable[[int, str], None] | None = None):
+    """Download crisp 720p/480p preview proxy so editing and scrubbing look great without downloading 4K masters."""
     if update:
-        update(15, "Downloading lightweight preview proxy (zero full HD download)")
+        update(15, "Fetching high-quality 720p preview video")
 
     opts = {
-        **_ydl_base_opts(),
-        "format": "worst[ext=mp4]/worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst",
+        **_ydl_base_opts(cookies_browser),
+        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best[height<=480]/best",
         "outtmpl": str(output_path),
         "overwrites": True,
     }
@@ -105,14 +119,14 @@ def download_preview_proxy(url: str, output_path: Path, update: Callable[[int, s
         ydl.download([url])
 
 
-def download_clip_section(url: str, start: float, end: float, output_path: Path, max_height: int = 1080, update: Callable[[int, str], None] | None = None):
-    """Fetch ONLY the exact 30-60 second time range at high resolution for clip rendering."""
+def download_clip_section(url: str, start: float, end: float, output_path: Path, max_height: int = 1080, cookies_browser: str | None = None, update: Callable[[int, str], None] | None = None):
+    """Fetch ONLY the exact 30-60 second time range at full high definition (up to 1080p)."""
     if update:
-        update(20, f"Fetching {end - start:.1f}s clip section from link ({start:.1f}s to {end:.1f}s)")
+        update(20, f"Fetching {end - start:.1f}s full-quality slice ({start:.1f}s to {end:.1f}s)")
 
     opts = {
-        **_ydl_base_opts(),
-        "format": f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]/best",
+        **_ydl_base_opts(cookies_browser),
+        "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
         "outtmpl": str(output_path),

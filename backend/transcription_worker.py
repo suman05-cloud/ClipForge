@@ -2,9 +2,25 @@
 import ctypes
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from .transcription import cuda_directories
+
+
+def deduplicate_sentences(text: str) -> str:
+    """Eliminate consecutive repeated sentences or loop hallucinations."""
+    parts = re.split(r'([.?!]\s+)', text.strip())
+    cleaned = []
+    prev = ""
+    for p in parts:
+        norm = re.sub(r'[^a-zA-Z0-9]', '', p).lower()
+        if norm and norm == prev:
+            continue
+        if norm:
+            prev = norm
+        cleaned.append(p)
+    return "".join(cleaned).strip() or text.strip()
 
 
 def emit(value):
@@ -77,7 +93,10 @@ def main():
         language=config.get("language"),
         beam_size=1,
         vad_filter=True,
-        word_timestamps=False
+        word_timestamps=False,
+        condition_on_previous_text=False,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3
     )
     engine = model
     if device == "cuda":
@@ -91,8 +110,9 @@ def main():
     for segment in segments:
         start = max(0.0, segment.start)
         end = min(video_dur, segment.end)
-        if segment.text.strip() and end > start:
-            result.append({"start": round(start, 3), "end": round(end, 3), "text": segment.text.strip()})
+        cleaned_text = deduplicate_sentences(segment.text)
+        if cleaned_text and end > start:
+            result.append({"start": round(start, 3), "end": round(end, 3), "text": cleaned_text})
         pct = min(96, 12 + int(end / video_dur * 84))
         emit({
             "type": "progress",

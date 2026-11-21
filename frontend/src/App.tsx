@@ -103,6 +103,7 @@ export default function App() {
   const [linkUrl, setLinkUrl] = useState('');
   const [linkTitle, setLinkTitle] = useState('');
   const [linkFetchSubs, setLinkFetchSubs] = useState(true);
+  const [linkCookies, setLinkCookies] = useState<'none' | 'chrome' | 'edge'>('none');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState('');
@@ -395,7 +396,8 @@ export default function App() {
         body: JSON.stringify({
           url: linkUrl.trim(),
           title: linkTitle.trim() || undefined,
-          fetch_subtitles: linkFetchSubs
+          fetch_subtitles: linkFetchSubs,
+          cookies_browser: linkCookies === 'none' ? undefined : linkCookies
         })
       });
       setJob(j);
@@ -438,7 +440,19 @@ export default function App() {
     });
 
   const allExports = projects.flatMap((p) => (p.exports || []).map((e) => ({ ...e, project: p.title })));
-  const currentCaption = segments.find((s) => currentTime >= s.start && currentTime < s.end)?.text;
+  const currentCaption = (() => {
+    const s = segments.find((seg) => currentTime >= seg.start && currentTime < seg.end);
+    if (!s || !s.text || !s.text.trim()) return null;
+    const words = s.text.trim().split(/\s+/);
+    if (words.length <= 5) return words.join(' ');
+    // Split into 4-word timed chunks matching the exact playback second (TikTok/Reels format)
+    const chunkSize = 4;
+    const chunkCount = Math.ceil(words.length / chunkSize);
+    const duration = Math.max(0.2, s.end - s.start);
+    const relTime = Math.max(0, currentTime - s.start);
+    const activeIndex = Math.min(chunkCount - 1, Math.floor((relTime / duration) * chunkCount));
+    return words.slice(activeIndex * chunkSize, (activeIndex + 1) * chunkSize).join(' ');
+  })();
   const exported = project?.exports || [];
 
   const scale = project ? Math.max(frameSize.width / project.width, frameSize.height / project.height) * (clip?.zoom ?? 1) : 1;
@@ -1109,12 +1123,12 @@ export default function App() {
                         style={
                           {
                             color: clip.caption_color,
-                            fontSize: `${Math.max(14, clip.font_size * 0.38)}px`,
+                            fontSize: `${Math.max(16, Math.min(26, Math.round((clip.font_size * frameSize.width) / 720)))}px`,
                             '--accent': clip.accent_color
                           } as React.CSSProperties
                         }
                       >
-                        {currentCaption}
+                        <span className="preview-caption-bubble">{currentCaption}</span>
                       </div>
                     )}
                   </div>
@@ -1519,7 +1533,7 @@ export default function App() {
                 className={`modal-tab ${uploadModalTab === 'link' ? 'active' : ''}`}
                 onClick={() => setUploadModalTab('link')}
               >
-                <Link2 size={16} /> Import from Link (YouTube)
+                <Link2 size={16} /> Import Link (YouTube, Instagram, Facebook)
               </button>
             </div>
 
@@ -1561,13 +1575,13 @@ export default function App() {
               </>
             ) : (
               <>
-                <p className="modal-intro">Paste a YouTube or online video link. ClipForge extracts captions and a tiny preview proxy without downloading the full master video.</p>
+                <p className="modal-intro">Paste a YouTube, Instagram Reel, or Facebook video link. ClipForge extracts captions and a crisp preview without downloading massive master files.</p>
 
                 <label className="field">
                   Video URL <span className="required">*</span>
                   <input
                     type="url"
-                    placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+                    placeholder="https://youtube.com/..., https://instagram.com/reel/..., or https://facebook.com/..."
                     value={linkUrl}
                     onChange={(e) => setLinkUrl(e.target.value)}
                     autoFocus
@@ -1584,6 +1598,15 @@ export default function App() {
                   />
                 </label>
 
+                <label className="field">
+                  Browser Cookies <span className="muted">(Optional - for login-gated Instagram or Facebook reels)</span>
+                  <select value={linkCookies} onChange={(e) => setLinkCookies(e.target.value as any)}>
+                    <option value="none">None (Direct public download)</option>
+                    <option value="chrome">Chrome (Use active Chrome cookies for login/private content)</option>
+                    <option value="edge">Edge (Use active Edge cookies for login/private content)</option>
+                  </select>
+                </label>
+
                 <label className="checkbox-field">
                   <input
                     type="checkbox"
@@ -1592,15 +1615,15 @@ export default function App() {
                   />
                   <span>
                     Auto-import video subtitles & captions
-                    <small>Extracts existing YouTube subtitles in seconds so you can research & find clips right away</small>
+                    <small>Extracts existing subtitles in seconds so you can research & find clips right away</small>
                   </span>
                 </label>
 
                 <div className="link-info-box">
                   <Sparkles size={18} />
                   <div>
-                    <strong>No massive video download needed</strong>
-                    <span>ClipForge fetches metadata, instant captions, and a lightweight 360p proxy. High definition is only fetched on demand for the exact 30–60s slice during export!</span>
+                    <strong>Full-Quality Slices on Demand</strong>
+                    <span>ClipForge fetches metadata, instant captions, and a crisp 720p preview. High definition (up to 1080p) is fetched for the exact clip slices you choose!</span>
                   </div>
                 </div>
 

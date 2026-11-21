@@ -178,3 +178,20 @@ def test_remote_model_rejected():
     client=httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(200,json={"remote_host":"https://cloud.example","details":{"parameter_size":"8B"}})))
     with pytest.raises(ValueError,match="remote service"):
         s._model_ready(client,"http://127.0.0.1:11434","other:8b")
+
+
+def test_summary_reuse_skips_chunks(monkeypatch):
+    model = Model()
+    install_model(monkeypatch, model)
+    p = project(count=10)
+    p["analysis"] = {
+        "summary": "Existing verified summary of the whole video.",
+        "topics": ["topic A", "topic B"],
+        "coverage": {"total_segments": 10, "complete": True}
+    }
+    progress = []
+    rows, analysis = s.analyze_transcript(p, settings(), lambda p, msg: progress.append((p, msg)), "http://127.0.0.1:11434")
+    assert any("already analyzed" in msg for _, msg in progress)
+    summary_requests = [req for url, req in model.requests if "core_transcript" in json.dumps(req)]
+    assert len(summary_requests) == 0
+    assert analysis["summary"] == "Existing verified summary of the whole video."

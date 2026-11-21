@@ -129,6 +129,7 @@ class LinkInput(StrictModel):
     url: str = Field(min_length=1, max_length=2000)
     title: str | None = Field(default=None, max_length=160)
     fetch_subtitles: bool = True
+    cookies_browser: Literal["chrome", "edge"] | None = None
 
 
 class ExportInput(StrictModel):
@@ -298,7 +299,7 @@ def import_link(body: LinkInput):
         from . import downloader
         update(5, "Contacting video link & extracting metadata")
         try:
-            info = downloader.extract_info(body.url)
+            info = downloader.extract_info(body.url, cookies_browser=body.cookies_browser)
         except Exception as exc:
             shutil.rmtree(folder, ignore_errors=True)
             raise ValueError(f"Could not read video from link: {exc}")
@@ -326,9 +327,9 @@ def import_link(body: LinkInput):
             except Exception:
                 pass
 
-        update(45, "Fetching lightweight 360p preview proxy (zero full HD download)")
+        update(45, "Fetching high-quality preview proxy")
         try:
-            downloader.download_preview_proxy(body.url, source, update)
+            downloader.download_preview_proxy(body.url, source, cookies_browser=body.cookies_browser, update=update)
         except Exception:
             pass
 
@@ -349,6 +350,7 @@ def import_link(body: LinkInput):
             "source_file": source.name if source.is_file() else "source.mp4",
             "source_url": body.url,
             "is_link": True,
+            "cookies_browser": body.cookies_browser,
             "youtube_id": info.get("id"),
             "size": source.stat().st_size if source.is_file() else 0,
             "created_at": now(),
@@ -623,6 +625,7 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
                     clip["end"],
                     temp_slice,
                     max_height=body.resolution,
+                    cookies_browser=p.get("cookies_browser"),
                     update=update
                 )
                 sliced_clip = {**clip, "start": 0.0, "end": clip["end"] - clip["start"]}
