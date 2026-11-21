@@ -17,6 +17,16 @@ import yt_dlp
 from . import media
 
 
+def _find_cookie_file() -> Path | None:
+    for candidate in (Path("clipforge/cookies.txt"), Path("cookies.txt"), Path("clipforge/data/cookies.txt"), Path("data/cookies.txt")):
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate.resolve()
+        except OSError:
+            pass
+    return None
+
+
 def _ydl_base_opts(cookies_browser: str | None = None) -> dict:
     opts = {
         "quiet": True,
@@ -29,16 +39,19 @@ def _ydl_base_opts(cookies_browser: str | None = None) -> dict:
         opts["js_runtimes"] = {"node": {"path": node_path}}
     else:
         opts["js_runtimes"] = {"node": {}}
-    if cookies_browser:
+    cookie_file = _find_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = str(cookie_file)
+    elif cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
     return opts
 
 
 def extract_info(url: str, cookies_browser: str | None = None) -> dict:
     """Extract video metadata and available subtitle tracks without downloading media.
-    Supports YouTube, Instagram Reels, and Facebook video links with automatic cookie fallback.
+    Supports YouTube, Instagram Reels, and Facebook video links.
     """
-    candidates = [cookies_browser] if cookies_browser else [None, "chrome", "edge"]
+    candidates = [cookies_browser] if cookies_browser else [None]
     last_exc = None
     for browser in candidates:
         try:
@@ -60,8 +73,16 @@ def extract_info(url: str, cookies_browser: str | None = None) -> dict:
                 return info
         except Exception as exc:
             last_exc = exc
+            err_msg = str(exc)
+            if "Could not copy Chrome cookie database" in err_msg or "Permission denied" in err_msg:
+                raise ValueError("Cannot read browser cookies while Chrome/Edge is currently open. Please close your browser window so Windows unlocks the database, or use a cookies.txt file.")
+            if "Sign in to confirm you’re not a bot" in err_msg:
+                raise ValueError("YouTube bot check triggered for this video. To import it, either place a cookies.txt file in the ClipForge folder or select Chrome/Edge cookies in the dropdown.")
             continue
-    raise ValueError(f"Could not read video from this link: {last_exc or 'Unknown error'}")
+    err_str = str(last_exc) if last_exc else "Unknown error"
+    if "Sign in to confirm you’re not a bot" in err_str:
+        raise ValueError("YouTube bot check triggered for this video. To import it, either place a cookies.txt file in the ClipForge folder, or select Chrome/Edge cookies in the dropdown.")
+    raise ValueError(f"Could not read video from this link: {err_str}")
 
 
 def extract_subtitles(info: dict) -> list[dict]:
