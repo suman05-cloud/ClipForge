@@ -621,7 +621,26 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
         temp_slice = None
         try:
             source_path = (directory(id) / p["source_file"]).resolve()
-            if p.get("is_link") and p.get("source_url"):
+            
+            # Check if local source video is already complete and covers this clip's time range
+            local_covers_clip = False
+            if source_path.is_file():
+                try:
+                    src_info = media.probe(source_path)
+                    if src_info.get("duration", 0) >= (clip["end"] - 0.5):
+                        local_covers_clip = True
+                except Exception:
+                    pass
+
+            # Only fetch remote slice if local file is missing, does not cover clip range,
+            # or if higher resolution (1080p) is explicitly requested and local is lower resolution
+            need_remote_slice = (
+                p.get("is_link")
+                and bool(p.get("source_url"))
+                and (not local_covers_clip or (body.resolution > p.get("height", 720) and body.resolution > 720))
+            )
+
+            if need_remote_slice:
                 from . import downloader
                 temp_slice = folder / f"raw_slice_{export_id}.mp4"
                 try:
@@ -635,7 +654,7 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
                         update=update
                     )
                 except Exception:
-                    # If remote fetch fails (e.g. network throttle, rate-limit, or bot-check), gracefully fallback to local source if present
+                    # If remote fetch fails or is throttled, gracefully fallback to local source if present
                     if source_path.is_file():
                         temp_slice = None
                     else:
