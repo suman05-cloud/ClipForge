@@ -1,4 +1,5 @@
 """Media operations. Every command uses an argv array, never a command shell."""
+import functools
 import json
 import math
 import os
@@ -6,6 +7,21 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+
+
+@functools.lru_cache(maxsize=1)
+def nvenc_available() -> bool:
+    """Check if NVIDIA NVENC H.264 hardware encoder is supported and functional."""
+    try:
+        probe = subprocess.run(
+            [binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True,
+            timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        )
+        return probe.returncode == 0
+    except Exception:
+        return False
 
 
 def binary(name):
@@ -136,39 +152,87 @@ def dimensions(aspect, resolution):
 
 
 def render(source, output, clip, segments, resolution, update):
-    width,height = dimensions(clip["aspect"], resolution)
+    source_path = Path(source).resolve()
+    output_path = Path(output).resolve()
+    width, height = dimensions(clip["aspect"], resolution)
     if clip["fit"] == "crop":
-        zoom = clip.get("zoom",1)
-        filters = [f"scale={width}:{height}:force_original_aspect_ratio=increase", f"scale=trunc(iw*{zoom}/2)*2:trunc(ih*{zoom}/2)*2", f"crop={width}:{height}:(iw-ow)*{clip['crop_x']}:(ih-oh)*{clip.get('crop_y',0.5)}"]
+        zoom = clip.get("zoom", 1)
+        filters = [
+            f"scale={width}:{height}:force_original_aspect_ratio=increase",
+            f"scale=trunc(iw*{zoom}/2)*2:trunc(ih*{zoom}/2)*2",
+            f"crop={width}:{height}:(iw-ow)*{clip['crop_x']}:(ih-oh)*{clip.get('crop_y', 0.5)}"
+        ]
     else:
-        filters = [f"scale={width}:{height}:force_original_aspect_ratio=decrease", f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x101014"]
+        filters = [
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x101014"
+        ]
     filters.append("setsar=1")
-    subtitle = output.with_suffix(".ass")
+    subtitle = output_path.with_suffix(".ass")
     if clip["burn_captions"] and clip["caption_style"] != "none" and segments:
-        subtitle.write_text(ass_document(segments,clip,width,height),encoding="utf-8")
+        subtitle.write_text(ass_document(segments, clip, width, height), encoding="utf-8")
         # Simple generated basename, working directory avoids Windows drive/filter escaping.
         filters.append(f"ass=filename={subtitle.name}")
-    command = [binary("ffmpeg"),"-hide_banner","-loglevel","error","-y","-ss",str(clip["start"]),"-i",str(source),"-t",str(clip["end"]-clip["start"]),"-map","0:v:0","-map","0:a:0?","-vf",",".join(filters),"-c:v","libx264","-preset","veryfast","-crf","21","-pix_fmt","yuv420p","-c:a","aac","-b:a","160k","-movflags","+faststart","-threads","4","-progress","pipe:1","-nostats",str(output)]
-    # Keep stderr on disk: no pipe deadlock on verbose decoder failures.
-    log = output.with_suffix(".log")
+
+    use_gpu = nvenc_available()
+    attempts = [True, False] if use_gpu else [False]
+    last_error = ""
+
     try:
-        with log.open("w",encoding="utf-8") as errors:
-            process = subprocess.Popen(command,cwd=output.parent,stdout=subprocess.PIPE,stderr=errors,text=True,encoding="utf-8",errors="replace")
+        for is_gpu in attempts:
+            if is_gpu:
+                v_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "22", "-pix_fmt", "yuv420p"]
+            else:
+                cpu_threads = str(min(os.cpu_count() or 4, 16))
+                v_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-threads", cpu_threads]
+
+            command = [
+                binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", str(clip["start"]),
+                "-i", str(source_path),
+                "-t", str(clip["end"] - clip["start"]),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", ",".join(filters),
+                *v_args,
+                "-c:a", "aac", "-b:a", "160k",
+                "-movflags", "+faststart",
+                "-progress", "pipe:1", "-nostats",
+                str(output_path)
+            ]
+            log = output_path.with_suffix(".log")
             try:
-                for line in process.stdout:
-                    if line.startswith("out_time_us="):
-                        try:
-                            elapsed=float(line.strip().split("=",1)[1])/1_000_000
-                            update(min(95,10+int(85*elapsed/(clip["end"]-clip["start"]))),"Rendering MP4")
-                        except ValueError:
-                            pass
-                process.wait(timeout=30)
+                with log.open("w", encoding="utf-8") as errors:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=output_path.parent,
+                        stdout=subprocess.PIPE,
+                        stderr=errors,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace"
+                    )
+                    try:
+                        clip_dur = max(0.1, clip["end"] - clip["start"])
+                        label = "Rendering MP4 (GPU NVENC)" if is_gpu else "Rendering MP4 (CPU)"
+                        for line in process.stdout:
+                            if line.startswith("out_time_us="):
+                                try:
+                                    elapsed = float(line.strip().split("=", 1)[1]) / 1_000_000
+                                    update(min(95, 10 + int(85 * elapsed / clip_dur)), label)
+                                except ValueError:
+                                    pass
+                        process.wait(timeout=60)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
+                    if process.returncode == 0 and output_path.is_file() and output_path.stat().st_size > 1024:
+                        return
+                    last_error = log.read_text(encoding="utf-8")[-1400:] if log.is_file() else "Unknown FFmpeg error"
+                    output_path.unlink(missing_ok=True)
             finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-            if process.returncode:
-                raise ValueError("FFmpeg export failed: "+log.read_text(encoding="utf-8")[-1400:])
+                log.unlink(missing_ok=True)
+
+        raise ValueError("FFmpeg export failed: " + last_error)
     finally:
         subtitle.unlink(missing_ok=True)
-        log.unlink(missing_ok=True)

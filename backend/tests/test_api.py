@@ -280,3 +280,36 @@ def test_downloader_ensure_mp4_remux(tmp_path):
     meta = media.probe(target_mp4)
     assert meta["has_audio"] is True
 
+
+def test_render_hardware_acceleration_and_cpu_fallback(tmp_path, monkeypatch):
+    from backend import media
+
+    src = tmp_path / "sample.mp4"
+    out_gpu = tmp_path / "rendered_gpu.mp4"
+    out_cpu = tmp_path / "rendered_cpu.mp4"
+
+    subprocess.run([
+        media.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000",
+        "-t", "1", "-shortest", str(src)
+    ], check=True)
+
+    clip = {"start": 0.0, "end": 0.8, "aspect": "9:16", "fit": "crop", "crop_x": 0.5, "burn_captions": False, "caption_style": "none"}
+    
+    # Test rendering with normal configuration (will use NVENC if available)
+    media.render(src, out_gpu, clip, [], 720, lambda p, m: None)
+    assert out_gpu.is_file()
+    assert out_gpu.stat().st_size > 1000
+    info = media.probe(out_gpu)
+    assert (info["width"], info["height"]) == (720, 1280)
+
+    # Test forced CPU fallback
+    monkeypatch.setattr(media, "nvenc_available", lambda: False)
+    media.render(src, out_cpu, clip, [], 720, lambda p, m: None)
+    assert out_cpu.is_file()
+    assert out_cpu.stat().st_size > 1000
+    info_cpu = media.probe(out_cpu)
+    assert (info_cpu["width"], info_cpu["height"]) == (720, 1280)
+
+

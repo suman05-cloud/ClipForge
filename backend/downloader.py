@@ -155,11 +155,12 @@ def _ensure_mp4_output(output_path: Path) -> Path:
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if res.returncode != 0 or not output_path.is_file() or output_path.stat().st_size < 1024:
-            # Fallback to re-encoding video if codec copy in MP4 container is unsupported
+            # Fallback to hardware or multithreaded re-encoding video if codec copy in MP4 container is unsupported
+            v_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"] if media.nvenc_available() else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "0"]
             cmd_fallback = [
                 ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(chosen),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                *v_args,
                 "-c:a", "aac", "-b:a", "160k",
                 "-movflags", "+faststart",
                 str(output_path)
@@ -208,7 +209,7 @@ def download_clip_section(url: str, start: float, end: float, output_path: Path,
     target_base = str(output_path.with_suffix(""))
     opts = {
         **_ydl_base_opts(cookies_browser),
-        "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
+        "format": f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
         "merge_output_format": "mp4",

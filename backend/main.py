@@ -620,18 +620,28 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
         output=folder/(export_id+".mp4")
         temp_slice = None
         try:
+            source_path = (directory(id) / p["source_file"]).resolve()
             if p.get("is_link") and p.get("source_url"):
                 from . import downloader
                 temp_slice = folder / f"raw_slice_{export_id}.mp4"
-                downloader.download_clip_section(
-                    p["source_url"],
-                    clip["start"],
-                    clip["end"],
-                    temp_slice,
-                    max_height=body.resolution,
-                    cookies_browser=p.get("cookies_browser"),
-                    update=update
-                )
+                try:
+                    downloader.download_clip_section(
+                        p["source_url"],
+                        clip["start"],
+                        clip["end"],
+                        temp_slice,
+                        max_height=body.resolution,
+                        cookies_browser=p.get("cookies_browser"),
+                        update=update
+                    )
+                except Exception:
+                    # If remote fetch fails (e.g. network throttle, rate-limit, or bot-check), gracefully fallback to local source if present
+                    if source_path.is_file():
+                        temp_slice = None
+                    else:
+                        raise
+
+            if temp_slice and temp_slice.is_file():
                 sliced_clip = {**clip, "start": 0.0, "end": clip["end"] - clip["start"]}
                 shifted_segments = [
                     {**s, "start": s["start"] - clip["start"], "end": s["end"] - clip["start"]}
@@ -639,7 +649,7 @@ def export_clip(id:str,clip_id:str,body:ExportInput):
                 ]
                 media.render(temp_slice, output, sliced_clip, shifted_segments, body.resolution, update)
             else:
-                media.render(directory(id)/p["source_file"],output,clip,p["segments"],body.resolution,update)
+                media.render(source_path, output, clip, p["segments"], body.resolution, update)
             info=media.probe(output)
             media.thumbnail(output,folder/(export_id+".jpg"),min(.5,info["duration"]/2))
             result={"id":export_id,"clip_id":clip_id,"title":clip["title"],"url":f"/api/projects/{id}/exports/{export_id}/download","preview_url":f"/api/projects/{id}/exports/{export_id}/video","thumbnail_url":f"/api/projects/{id}/exports/{export_id}/thumbnail","size":output.stat().st_size,"created_at":now(),"width":info["width"],"height":info["height"],"duration":info["duration"],"settings":clip}
